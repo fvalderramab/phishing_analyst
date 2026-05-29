@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     gemini_model: str = Field(..., validation_alias="GEMINI_MODEL")
     
     # External Security APIs for Phishing Analysis
+    safe_browsing_api_key: str = Field(..., validation_alias="SAFE_BROWSING_API_KEY")
     virustotal_api_key: str = Field(..., validation_alias="VIRUSTOTAL_API_KEY")
     urlscan_api_key: str = Field(..., validation_alias="URLSCAN_API_KEY")
     phishtank_api_key: str = Field(..., validation_alias="PHISHTANK_API_KEY")
