@@ -3,29 +3,59 @@ import hmac
 import json
 import logging
 import secrets
+from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, Request, Query, HTTPException, BackgroundTasks, status
 from fastapi.responses import PlainTextResponse, Response
+from redis.asyncio import Redis
 
 from app.config import settings
+from app.security.deduplicator import EventDeduplicator
+from app.security.utils import sanitize_log_input
 
 # Initialize logging for webhook events
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def sanitize_log_input(value: str) -> str:
+# Global Redis client instance
+redis_client: Optional[Redis] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Sanitize user input before logging to prevent log injection (CWE-117).
-    Replaces carriage returns and line feeds with their escaped representations.
+    Manages the lifecycle of the FastAPI application, initializing the Redis
+    client connection on startup and closing it gracefully on shutdown.
     """
-    if not isinstance(value, str):
-        return str(value)
-    return value.replace("\n", "\\n").replace("\r", "\\r")
+    global redis_client
+    logger.info("Initializing connection to Redis...")
+    try:
+        redis_client = Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+            decode_responses=True
+        )
+        # Test connection health
+        await redis_client.ping()
+        logger.info("Connected to Redis successfully.")
+    except Exception as err:
+        logger.error(f"Redis initialization failed! Error: {err}")
+        # Lifespan fail-safe: allow server startup even if Redis is unreachable
+        redis_client = None
+
+    yield
+
+    if redis_client:
+        logger.info("Closing Redis connection pool...")
+        await redis_client.aclose()
+        logger.info("Redis connection closed securely.")
 
 app = FastAPI(
     title="Phishing Analyst Agent - Base Webhook Server",
     description="FastAPI Server for receiving and processing Meta WhatsApp Cloud API webhooks.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 async def verify_signature(request: Request) -> bytes:
@@ -69,11 +99,55 @@ async def verify_signature(request: Request) -> bytes:
 
     return raw_body
 
-async def process_whatsapp_payload(payload: dict) -> None:
+def extract_message_info(payload: dict) -> tuple[Optional[str], Optional[int]]:
+    """
+    Extracts the message ID and timestamp from the WhatsApp Cloud API payload.
+    Supports both incoming messages (messages) and status updates (statuses),
+    safely handling missing keys or indices to avoid exceptions.
+    Returns:
+        (message_id, timestamp_int)
+    """
+    try:
+        entries = payload.get("entry", [])
+        if not entries:
+            return None, None
+            
+        changes = entries[0].get("changes", [])
+        if not changes:
+            return None, None
+            
+        value = changes[0].get("value", {})
+        
+        # 1. Attempt to extract from incoming messages list
+        messages = value.get("messages", [])
+        if messages:
+            msg = messages[0]
+            msg_id = msg.get("id")
+            ts_str = msg.get("timestamp")
+            ts = int(ts_str) if ts_str is not None else None
+            return msg_id, ts
+            
+        # 2. Attempt to extract from status updates list
+        statuses = value.get("statuses", [])
+        if statuses:
+            status_item = statuses[0]
+            msg_id = status_item.get("id")
+            ts_str = status_item.get("timestamp")
+            ts = int(ts_str) if ts_str is not None else None
+            return msg_id, ts
+            
+        return None, None
+    except (IndexError, ValueError, TypeError, AttributeError) as err:
+        logger.debug(f"Parsing WhatsApp payload failed or was not a message/status event: {err}")
+        return None, None
+
+async def process_whatsapp_payload(payload: dict, message_id: Optional[str], timestamp: Optional[int]) -> None:
     """
     Background worker task to process the WhatsApp payload without holding the HTTP response.
+    Passes message_id and timestamp consistently to prevent time-drift.
     """
-    logger.info("Executing background processing of WhatsApp payload...")
+    safe_msg_id = sanitize_log_input(message_id) if message_id else "N/A"
+    logger.info(f"Executing background processing of WhatsApp payload for msg_id: {safe_msg_id} (timestamp: {timestamp})...")
     try:
         # Placeholder for routing content to phishing engine, redis caching, and Gemini API
         logger.info(f"Incoming payload contents parsed: {json.dumps(payload, indent=2)}")
@@ -126,7 +200,8 @@ async def receive_webhook(
 ):
     """
     Receive payloads representing events from the WhatsApp Cloud API.
-    Performs signature checks, schedules background processing, and returns 200 OK immediately.
+    Performs signature checks, checks event deduplication, schedules background
+    processing, and returns 200 OK immediately to avoid Meta retries.
     """
     # Enforce request authenticity before processing
     raw_body = await verify_signature(request)
@@ -146,7 +221,23 @@ async def receive_webhook(
             detail="Invalid JSON."
         )
 
-    # Offload processing to a background task to return a 200 response immediately to Meta
-    background_tasks.add_task(process_whatsapp_payload, payload)
+    # Safe payload parsing for both messages and statuses
+    message_id, timestamp = extract_message_info(payload)
+
+    # Webhook Event Deduplication with Redis (fail-safe enabled)
+    if message_id:
+        is_dup = False
+        if redis_client is not None:
+            deduplicator = EventDeduplicator(redis_client)
+            is_dup = await deduplicator.is_duplicate(message_id)
+        else:
+            logger.warning("Redis client is uninitialized. Skipping deduplication checks (fail-safe mode active).")
+            
+        if is_dup:
+            # Return 200 OK immediately without queuing background task
+            return Response(status_code=status.HTTP_200_OK)
+
+    # Offload processing to a background task
+    background_tasks.add_task(process_whatsapp_payload, payload, message_id, timestamp)
 
     return Response(status_code=status.HTTP_200_OK)
