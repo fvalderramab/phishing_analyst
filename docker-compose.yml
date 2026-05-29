@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phishing_analyst_web
+    ports:
+      - "127.0.0.1:8000:8000"  # Enforces local-only host binding for secure testing
+    volumes:
+      - .:/code
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: phishing_analyst_redis
+    ports:
+      - "127.0.0.1:6379:6379"  # Restricts DB port to localhost to prevent public scanning
+    volumes:
+      - redis_data:/data
+    restart: always
+
+volumes:
+  redis_data:
