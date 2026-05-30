@@ -28,5 +28,18 @@ services:
       - redis_data:/data
     restart: always
 
+  ngrok:
+    image: ngrok/ngrok:alpine
+    container_name: phishing_analyst_ngrok
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    command:
+      - "http"
+      - "web:8000"
+      - "--url=${NGROK_SUBDOMAIN}"
+    depends_on:
+      - web
+    restart: always
+
 volumes:
   redis_data:
