@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 from app.config import settings
 from app.security.deduplicator import EventDeduplicator
 from app.security.utils import sanitize_log_input
+from app.services.orchestrator import process_whatsapp_event_task
 
 # Initialize logging for webhook events
 logging.basicConfig(level=logging.INFO)
@@ -237,7 +238,7 @@ async def receive_webhook(
             # Return 200 OK immediately without queuing background task
             return Response(status_code=status.HTTP_200_OK)
 
-    # Offload processing to a background task
-    background_tasks.add_task(process_whatsapp_payload, payload, message_id, timestamp)
+    # Offload processing to our services orchestrator background task
+    background_tasks.add_task(process_whatsapp_event_task, payload)
 
     return Response(status_code=status.HTTP_200_OK)

@@ -51,7 +51,7 @@ async def download_meta_media(media_id: str) -> bytes:
     safe_media_id = sanitize_log_input(media_id)
     logger.info(f"Initiating download process for Meta media ID: {safe_media_id}")
     
-    metadata_url = f"https://graph.facebook.com/v24.0/{media_id}"
+    metadata_url = f"https://graph.facebook.com/{settings.meta_api_version}/{media_id}"
     headers = {"Authorization": f"Bearer {settings.meta_access_token}"}
     
     try:

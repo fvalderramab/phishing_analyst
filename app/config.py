@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Meta / WhatsApp Cloud API credentials
     whatsapp_verify_token: str = Field(..., validation_alias="WHATSAPP_VERIFY_TOKEN")
     meta_app_secret: str = Field(..., validation_alias="META_APP_SECRET")
+    meta_api_version: str = Field(..., validation_alias="META_API_VERSION")
     whatsapp_phone_number_id: str = Field(..., validation_alias="WHATSAPP_PHONE_NUMBER_ID")
     meta_access_token: str = Field(..., validation_alias="META_ACCESS_TOKEN")
     
